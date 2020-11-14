@@ -20,7 +20,7 @@ const USAGE: &'static str = "
     termpix : display image from <file> in an ANSI terminal
 
     Usage:
-      termpix <file> [--width <width>] [--height <height>] [--max-width <max-width>] [--max-height <max-height>] [--true-color|--true-colour]
+      termpix <file> [--width <width>] [--height <height>] [--max-width <max-width>] [--max-height <max-height>] [--true-color|--true-colour] [--filter <nearest|triangle|catmullrom|gaussian|lanczos3>]
 
       By default it will use as much of the current terminal window as possible, while maintaining the aspect 
       ratio of the input image. This can be overridden as follows.
@@ -31,7 +31,8 @@ const USAGE: &'static str = "
       --max-width <max-width>  Maximum width to use when --width is excluded
       --max-height <max-height>  Maximum height to use when --height is excluded
       --true-colour             Use 24-bit RGB colour. Some terminals don't support this.
-      --true-colour             Use 24-bit RGB color but you don't spell so good.
+      --true-color             Use 24-bit RGB color but you don't spell so good.
+      --filter <filter>
 ";
 
 #[derive(Debug, Deserialize)]
@@ -42,35 +43,32 @@ struct Args {
     flag_max_height: Option<u32>,
     flag_true_colour: bool,
     flag_true_color: bool,
+    flag_filter: Option<String>,
     arg_file: String,
 }
 
 #[derive(Debug)]
 enum LoadImageError {
     SvgError(String),
-    ImageError(image::ImageError)
+    ImageError(image::ImageError),
 }
 
 impl std::fmt::Display for LoadImageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            LoadImageError::SvgError(msg) => {
-                write!(f,"{}",msg)
-            },
-            LoadImageError::ImageError(err) => err.fmt(f)
+            LoadImageError::SvgError(msg) => write!(f, "{}", msg),
+            LoadImageError::ImageError(err) => err.fmt(f),
         }
-        //Ok(())
     }
 }
-impl std::error::Error for LoadImageError {
-}
+impl std::error::Error for LoadImageError {}
 impl From<image::ImageError> for LoadImageError {
-    fn from(e:image::ImageError) -> Self {
+    fn from(e: image::ImageError) -> Self {
         LoadImageError::ImageError(e)
     }
 }
 
-fn get_image(path: &String) -> std::result::Result<DynamicImage,LoadImageError> {
+fn get_image(path: &String) -> std::result::Result<DynamicImage, LoadImageError> {
     if path.ends_with(".svg") {
         let svg_root = usvg::Tree::from_file(path, &usvg::Options::default());
         if let Err(_) = svg_root {
@@ -83,7 +81,7 @@ fn get_image(path: &String) -> std::result::Result<DynamicImage,LoadImageError> 
             let data = svg_image.data();
             for x in 0..svg_image.width() {
                 for y in 0..svg_image.height() {
-                    let ind: usize = ((y * svg_image.width() + x)*4) as usize;
+                    let ind: usize = ((y * svg_image.width() + x) * 4) as usize;
                     let r = data[ind];
                     let g = data[ind + 1];
                     let b = data[ind + 2];
@@ -98,19 +96,41 @@ fn get_image(path: &String) -> std::result::Result<DynamicImage,LoadImageError> 
     Ok(image::open(path)?)
 }
 
+fn get_filter(str: String) -> Option<imageops::FilterType> {
+    match str.as_str() {
+        "nearest" => Some(imageops::Nearest),
+        "triangle" => Some(imageops::Triangle),
+        "catmullrom" => Some(imageops::CatmullRom),
+        "gaussian" => Some(imageops::Gaussian),
+        "lanczos3" => Some(imageops::Lanczos3),
+        _ => None,
+    }
+}
+
 fn main() {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
+
+    let filter = (&args.flag_filter)
+        .as_ref()
+        .map_or(imageops::Gaussian, |f| {
+        get_filter(f.clone()).unwrap_or_else(|| {
+            eprintln!("Unknow filter: {}",f);
+            std::process::exit(-1)
+        })
+    });
+
     let img = get_image(&args.arg_file).unwrap_or_else(|e| {
-        eprint!("{}",e);
-        std::process::exit(-1)});
+        eprint!("{}", e);
+        std::process::exit(-1)
+    });
     let (orig_width, orig_height) = img.dimensions();
     let true_colour = args.flag_true_colour || args.flag_true_color;
     let (width, height) = determine_size(args, orig_width, orig_height);
 
-    termpix::print_image(img, true_colour, width, height);
+    termpix::print_image(img, true_colour, width, height, filter);
 }
 
 fn determine_size(args: Args, orig_width: u32, orig_height: u32) -> (u32, u32) {

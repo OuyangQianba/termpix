@@ -7,8 +7,9 @@ use ansi_term::Colour::Fixed;
 use ansi_term::ANSIStrings;
 use image::{imageops, Pixel};
 
-pub fn print_image(img: image::DynamicImage, true_colour: bool, width: u32, height: u32) {
-    let img = imageops::resize(&img, width, height, imageops::FilterType::Gaussian);
+
+pub fn print_image(img: image::DynamicImage, true_colour: bool, width: u32, height: u32,filter: imageops::FilterType) {
+    let img = imageops::resize(&img, width, height, filter);
 
     if !true_colour {
         for y in 0..height {
