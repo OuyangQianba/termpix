@@ -1,5 +1,7 @@
 extern crate docopt;
 extern crate image;
+extern crate resvg;
+extern crate usvg;
 #[macro_use]
 extern crate serde_derive;
 extern crate terminal_size;
@@ -8,10 +10,10 @@ extern crate termpix;
 use std::io::Write;
 
 use docopt::Docopt;
-use image::GenericImage;
-use terminal_size::{Width, Height, terminal_size};
+use image::GenericImageView;
+use image::*;
+use terminal_size::{terminal_size, Height, Width};
 
-use std::path::Path;
 use std::cmp::min;
 
 const USAGE: &'static str = "
@@ -43,24 +45,75 @@ struct Args {
     arg_file: String,
 }
 
+#[derive(Debug)]
+enum LoadImageError {
+    SvgError(String),
+    ImageError(image::ImageError)
+}
+
+impl std::fmt::Display for LoadImageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            LoadImageError::SvgError(msg) => {
+                write!(f,"{}",msg)
+            },
+            LoadImageError::ImageError(err) => err.fmt(f)
+        }
+        //Ok(())
+    }
+}
+impl std::error::Error for LoadImageError {
+}
+impl From<image::ImageError> for LoadImageError {
+    fn from(e:image::ImageError) -> Self {
+        LoadImageError::ImageError(e)
+    }
+}
+
+fn get_image(path: &String) -> std::result::Result<DynamicImage,LoadImageError> {
+    if path.ends_with(".svg") {
+        let svg_root = usvg::Tree::from_file(path, &usvg::Options::default());
+        if let Err(_) = svg_root {
+            return Err(LoadImageError::SvgError("Failed to load svg".to_string()));
+        }
+        let svg_root = svg_root.unwrap();
+        let svg_image = resvg::render(&svg_root, usvg::FitTo::Width(1000), None);
+        if let Some(svg_image) = svg_image {
+            let mut dyn_img = DynamicImage::new_rgba8(svg_image.width(), svg_image.height());
+            let data = svg_image.data();
+            for x in 0..svg_image.width() {
+                for y in 0..svg_image.height() {
+                    let ind: usize = ((y * svg_image.width() + x)*4) as usize;
+                    let r = data[ind];
+                    let g = data[ind + 1];
+                    let b = data[ind + 2];
+                    let a = data[ind + 3];
+
+                    dyn_img.put_pixel(x, y, image::Rgba([r, g, b, a]))
+                }
+            }
+            return Ok(dyn_img);
+        }
+    }
+    Ok(image::open(path)?)
+}
+
 fn main() {
-
     let args: Args = Docopt::new(USAGE)
-                            .and_then(|d| d.deserialize())
-                            .unwrap_or_else(|e| e.exit());
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
 
-    let img = image::open(&Path::new(&args.arg_file)).unwrap();
+    let img = get_image(&args.arg_file).unwrap_or_else(|e| {
+        eprint!("{}",e);
+        std::process::exit(-1)});
     let (orig_width, orig_height) = img.dimensions();
     let true_colour = args.flag_true_colour || args.flag_true_color;
     let (width, height) = determine_size(args, orig_width, orig_height);
 
     termpix::print_image(img, true_colour, width, height);
-
 }
 
-fn determine_size(args: Args,
-                  orig_width: u32,
-                  orig_height: u32) -> (u32, u32) {
+fn determine_size(args: Args, orig_width: u32, orig_height: u32) -> (u32, u32) {
     match (args.flag_width, args.flag_height) {
         (Some(w), Some(h)) => (w, h * 2),
         (Some(w), None) => (w, scale_dimension(w, orig_height, orig_width)),
@@ -68,14 +121,15 @@ fn determine_size(args: Args,
         (None, None) => {
             let size = terminal_size();
 
-            if let Some((Width(terminal_width), Height(terminal_height))) = size {                            
+            if let Some((Width(terminal_width), Height(terminal_height))) = size {
                 fit_to_size(
-                    orig_width, 
-                    orig_height, 
-                    terminal_width as u32, 
+                    orig_width,
+                    orig_height,
+                    terminal_width as u32,
                     (terminal_height - 1) as u32,
                     args.flag_max_width,
-                    args.flag_max_height)
+                    args.flag_max_height,
+                )
             } else {
                 writeln!(std::io::stderr(), "Neither --width or --height specified, and could not determine terminal size. Giving up.").unwrap();
                 std::process::exit(1);
@@ -88,27 +142,32 @@ fn scale_dimension(other: u32, orig_this: u32, orig_other: u32) -> u32 {
     (orig_this as f32 * other as f32 / orig_other as f32 + 0.5) as u32
 }
 
-pub fn fit_to_size(orig_width: u32, 
-                   orig_height: u32, 
-                   terminal_width: u32, 
-                   terminal_height: u32,
-                   max_width: Option<u32>,
-                   max_height: Option<u32>) -> (u32, u32) {
+pub fn fit_to_size(
+    orig_width: u32,
+    orig_height: u32,
+    terminal_width: u32,
+    terminal_height: u32,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> (u32, u32) {
     let target_width = match max_width {
         Some(max_width) => min(max_width, terminal_width),
-        None => terminal_width
+        None => terminal_width,
     };
 
     //2 pixels per terminal row
     let target_height = 2 * match max_height {
         Some(max_height) => min(max_height, terminal_height),
-        None => terminal_height
+        None => terminal_height,
     };
 
     let calculated_width = scale_dimension(target_height, orig_width, orig_height);
     if calculated_width <= target_width {
         (calculated_width, target_height)
     } else {
-        (target_width, scale_dimension(target_width, orig_height, orig_width))
+        (
+            target_width,
+            scale_dimension(target_width, orig_height, orig_width),
+        )
     }
 }
